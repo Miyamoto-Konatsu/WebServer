@@ -11,7 +11,7 @@
 
 class ThreadPool {
 public:
-    ThreadPool(int threadNum) : threadNum_(threadNum), isClosed_(false) {
+    ThreadPool(int threadNum = 8) : threadNum_(threadNum), isClosed_(false) {
         assert(threadNum);
     }
 

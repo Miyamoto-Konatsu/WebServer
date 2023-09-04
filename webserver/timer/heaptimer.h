@@ -156,6 +156,23 @@ public:
         return timers_.size() == 1;
     }
 
+    // 执行已经超时的任务并获取下一个超时时间
+    int getNextTick() {
+        int res = -1;
+        tick();
+        if (!timers_.empty()) {
+            auto now = stdClock::now();
+            auto timestamp = timers_[1].getTimestamp().getTimestamp();
+            if (now < timestamp) {
+                res = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          timestamp - now)
+                          .count();
+                if (res < 0) { res = 0; }
+            }
+        }
+        return res;
+    }
+
 private:
     void addTimerNode(const TimerNode &node) {
         timers_.push_back(node);

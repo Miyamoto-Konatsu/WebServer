@@ -53,6 +53,7 @@ void Log::init(const int level, const char *path, const char *suffix,
 }
 
 void Log::write(int level, const char *format, ...) {
+    if (level < level_) return;
     auto timeNow = getTimeNow();
     {
         int oldDate = year_ * 10000 + month_ * 100 + toDay_;

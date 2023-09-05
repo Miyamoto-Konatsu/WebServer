@@ -1,20 +1,29 @@
 #include "httpconn.h"
+#include "buffer/buffer.h"
+#include "http/httpresponse.h"
 #include "log/log.h"
 #include <cstring>
 #include <cassert>
 #include <errno.h>
+#include <fcntl.h>
+#include <string>
+#include <sys/sendfile.h>
+
 bool HttpConn::isET_ = false;
 
-HttpConn::HttpConn(int fd, char *ip, short port) :
-    fd_(fd), clientPort_(port), isClose_(false), iovCnt_(0) {
+HttpConn::HttpConn(int fd, char *ip, short port, std::string srcPath) :
+    fd_(fd), clientPort_(port), isClose_(false), srcPath_(srcPath),
+    response_(srcPath) {
     assert(ip != nullptr);
     strncpy(clientIp_, ip, INET_ADDRSTRLEN);
 }
 
+HttpConn::~HttpConn() {
+    close();
+}
 void HttpConn::close() {
     if (!isClose_) {
         ::close(fd_);
-        iovCnt_ = 0;
         isClose_ = true;
         readBuffer_.retrieveAll();
         writeBuffer_.retrieveAll();
@@ -31,14 +40,14 @@ int HttpConn::read(int &saveErrno) {
             saveErrno = errno;
             if (errno != EAGAIN) {
                 LOG_INFO(
-                    "ip: %s port: %d: read error, errno: %d, error info: %s",
+                    "ip: %s port: %d: read error, errno: %hu, error info: %s",
                     clientIp_, clientPort_, saveErrno, strerror(saveErrno));
                 return -1;
             } else {
                 break;
             }
         } else if (len == 0) {
-            LOG_INFO("ip: %s port: %d: disconnected", clientIp_, clientPort_);
+            LOG_INFO("ip: %s port: %hu: disconnected", clientIp_, clientPort_);
             return 0;
         } else {
             readSize += len;
@@ -51,18 +60,78 @@ int HttpConn::read(int &saveErrno) {
 
 int HttpConn::write(int &saveErrno) {
     assert(!isClose_);
-    
-    return 0;
+    int writeSize = 0;
+    do {
+        if (writeBuffer_.readableBytes()) {
+            int len =
+                ::write(fd_, writeBuffer_.peek(), writeBuffer_.readableBytes());
+            if (len == -1) {
+                saveErrno = errno;
+                if (errno != EAGAIN) {
+                    LOG_ERROR("write error, errno: %d, error info: %s",
+                              saveErrno, strerror(saveErrno));
+                    return -1;
+                } else {
+                    break;
+                }
+            } else {
+                writeSize += len;
+                writeBuffer_.retrieve(len);
+                if (writeBuffer_.readableBytes() == 0) {
+                    writeBuffer_.retrieveAll();
+                }
+            }
+        } else if (response_.fileBytesNeedWrite()) {
+            ssize_t needWrite = response_.fileBytesNeedWrite();
+            // SO_NOSIGPIPE ;
+            ssize_t ret = sendfile(fd_, response_.getFd(),
+                                   &response_.getOffset(), needWrite);
+            LOG_DEBUG("write file bytes, ret: %d", ret);
+            if (ret == -1) {
+                saveErrno = errno;
+                if (errno != EAGAIN) {
+                    LOG_ERROR("write error, errno: %d, error info: %s",
+                              saveErrno, strerror(saveErrno));
+                    return -1;
+                } else {
+                    break;
+                }
+            } else {
+                writeSize += ret;
+            }
+        } else {
+            break;
+        }
+    } while (isET_);
+
+    return writeSize;
 }
 
+// return true if read all or has error
+// return false if not read all
 bool HttpConn::process() {
-    return true;
+    bool hasError = false;
+    if (request_.parseRequest(readBuffer_, hasError)) {
+        response_.reset(200, request_.isKeepAlive(), request_.getPath());
+        response_.makeResponse(writeBuffer_);
+        request_.reset();
+        return true;
+    } else {
+        if (hasError) {
+            response_.reset(400, request_.isKeepAlive(), request_.getPath());
+            response_.makeResponse(writeBuffer_);
+            request_.reset();
+            return true;
+        }
+        return false;
+    }
 }
 
 bool HttpConn::isKeepAlive() {
-    return false;
+    return request_.isKeepAlive();
 }
 
 bool HttpConn::needWrite() {
-    return false;
+    return writeBuffer_.readableBytes() > 0
+           || response_.fileBytesNeedWrite() > 0;
 }

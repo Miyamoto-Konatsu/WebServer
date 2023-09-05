@@ -6,3 +6,6 @@ build/
 
 # ignore executables
 *.out
+
+#ignore log
+log/*

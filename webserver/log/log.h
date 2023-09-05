@@ -60,7 +60,8 @@ private:
 };
 
 #define LOG_BASE(level, format, ...)                                           \
-    Log::getInstance()->write(level, format, ##__VA_ARGS__);
+    Log::getInstance()->write(level, format, ##__VA_ARGS__);                   \
+    Log::getInstance()->flush();
 
 #define LOG_DEBUG(format, ...) LOG_BASE(0, format, ##__VA_ARGS__)
 #define LOG_INFO(format, ...) LOG_BASE(1, format, ##__VA_ARGS__)

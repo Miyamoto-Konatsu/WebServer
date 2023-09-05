@@ -1,19 +1,28 @@
 #include "webserver.h"
 #include "http/httpconn.h"
+#include "http/httprequest.h"
 #include "log/log.h"
 #include "pool/threadpool.h"
 #include "server/epoller.h"
 #include "timer/heaptimer.h"
+#include <netinet/tcp.h>
 #include "sys/socket.h"
 #include "unistd.h"
 #include <cassert>
+#include <cstdio>
+#include <errno.h>
+#include <string.h>
 #include <memory>
+#include <unistd.h>
+#include <sys/socket.h> // Added header for SO_NOSIGPIPE
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <iostream>
+volatile int WebServer::isClosed_ = 0;
 
 static void setNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -21,22 +30,31 @@ static void setNonBlocking(int fd) {
     fcntl(fd, F_SETFL, flags);
 }
 
-WebServer::WebServer(const char *ip, int port, int triggerMode, int timeout) :
-    ip_(ip), port_(port), triggerMode_(triggerMode), httpTimeOut_(timeout),
-    threadPool_(new ThreadPool), timer_(new HeapTimer), epoller_(new Epoller) {
+WebServer::WebServer(const char *ip, int port, int triggerMode, int timeout,
+                     std::string srcPath) :
+    ip_(ip),
+    port_(port), triggerMode_(triggerMode), httpTimeOut_(timeout),
+    srcPath_(srcPath), threadPool_(new ThreadPool(12)), timer_(new HeapTimer),
+    epoller_(new Epoller) {
+    httpConnTimerMap_.resize(65535);
+    httpConnMap_.resize(65535);
     init();
 }
 
+// todo: 按正确的顺序关闭资源
 WebServer::~WebServer() {
+    isClosed_ = 1;
+    close(listenFd_);
+    threadPool_.reset();
 }
 
 void WebServer::init() {
-    Log::getInstance()->init(0);
     threadPool_->start();
 
     initTriggerMode();
 
     listenFd_ = socket(AF_INET, SOCK_STREAM, 0);
+    setNonBlocking(listenFd_);
     struct sockaddr_in sa = {0};
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = inet_addr(ip_);
@@ -86,6 +104,7 @@ void WebServer::initTriggerMode() {
         break;
     }
     }
+    if (triggerMode_ >= 2) { HttpConn::setET(); }
 }
 
 void WebServer::start() {
@@ -94,8 +113,12 @@ void WebServer::start() {
         if (httpTimeOut_ > 0) { epollTimeOut = timer_->getNextTick(); }
         int eventNum = epoller_->epollWait(epollTimeOut);
         if (eventNum < 0) {
-            LOG_ERROR("epoll_wait error");
-            break;
+            if (errno != EINTR) {
+                LOG_ERROR("epoll_wait error");
+                break;
+            } else {
+                continue;
+            }
         }
         for (int i = 0; i < eventNum; ++i) {
             int fd = epoller_->getEvent(i).data.fd;
@@ -103,17 +126,12 @@ void WebServer::start() {
                 dealListen();
             } else if (epoller_->getEvent(i).events & (EPOLLRDHUP | EPOLLERR)) {
                 // todo:现在遇到EPOLLRDHUP和EPOLLERR都是直接关闭连接，后续应该单独处理EPOLLRDHUP事件
-                assert(httpConnMap_.count(fd) > 0);
-                httpConnMap_.erase(fd);
-                assert(httpConnTimerMap_.count(fd) > 0);
-                timer_->delTimerNode(httpConnTimerMap_[fd]);
-                httpConnTimerMap_.erase(fd);
-                close(fd);
+                closeHttpConn(fd);
             } else if (epoller_->getEvent(i).events & EPOLLIN) {
-                assert(httpConnMap_.count(fd) > 0);
+                assert(httpConnMap_[fd]);
                 dealRead(httpConnMap_[fd]);
             } else if (epoller_->getEvent(i).events & EPOLLOUT) {
-                assert(httpConnMap_.count(fd) > 0);
+                assert(httpConnMap_[fd]);
                 dealWrite(httpConnMap_[fd]);
             }
         }
@@ -121,15 +139,15 @@ void WebServer::start() {
 }
 
 void WebServer::closeHttpConn(int httpClientFd) {
-    assert(httpConnTimerMap_.count(httpClientFd) > 0);
-    assert(httpConnMap_.count(httpClientFd) > 0);
+    assert(httpConnMap_[httpClientFd]);
 
-    LOG_ERROR("close httpConn, fd: %d", httpClientFd);
-    timer_->delTimerNode(httpConnTimerMap_[httpClientFd]);
-    httpConnTimerMap_.erase(httpClientFd);
+    LOG_DEBUG("close httpConn, fd: %d", httpClientFd);
+    if (httpTimeOut_ > 0) {
+        timer_->delTimerNode(httpConnTimerMap_[httpClientFd]);
+    }
 
+    epoller_->delFd(httpClientFd);
     httpConnMap_[httpClientFd]->close();
-    httpConnMap_.erase(httpClientFd);
 }
 
 void WebServer::dealListen() {
@@ -138,10 +156,16 @@ void WebServer::dealListen() {
         socklen_t addr_len;
         int httpClientFd =
             accept(listenFd_, (struct sockaddr *)&addr, &addr_len);
-        char clientIp[INET_ADDRSTRLEN];
-        short clientPort;
+        int error_code = errno;
+        // printf("Error: %s\n", strerror(error_code));
+        if (httpClientFd < 0) break;
+        if (httpClientFd >= 65535) {
+            close(httpClientFd);
+            continue;
+        }
+        char clientIp[INET_ADDRSTRLEN] = {0};
+        unsigned short clientPort;
 
-        // 使用ntohs函数将端口从网络字节顺序转换为主机字节顺序
         clientPort = ntohs(addr.sin_port);
 
         // 使用inet_ntop函数将IP地址从网络字节顺序转换为字符串表示形式
@@ -151,21 +175,23 @@ void WebServer::dealListen() {
             close(httpClientFd);
             continue;
         } else {
-            LOG_INFO("accept a connection from %s:%d\n", clientIp, clientPort);
+            LOG_INFO("accept a connection from %s:%hu\n", clientIp, clientPort);
         }
 
-        httpConnMap_[httpClientFd] =
-            std::make_shared<HttpConn>(httpClientFd, clientIp, clientPort);
+        httpConnMap_[httpClientFd] = std::make_shared<HttpConn>(
+            httpClientFd, clientIp, clientPort, srcPath_);
         if (httpTimeOut_ > 0) {
             TimerId timerId = timer_->add(
                 [this, httpClientFd]() { closeHttpConn(httpClientFd); },
                 this->httpTimeOut_ / 1000, this->httpTimeOut_ % 1000);
+            httpConnTimerMap_[httpClientFd] = timerId;
         }
 
         setNonBlocking(httpClientFd);
-        epoller_->addFd(httpClientFd, httpConnEvent_ | EPOLLIN);
+        
+        assert(epoller_->addFd(httpClientFd, httpConnEvent_ | EPOLLIN));
 
-    } while (listenEvent_ | EPOLLET);
+    } while (listenEvent_ & EPOLLET);
 }
 
 void WebServer::dealRead(std::shared_ptr<HttpConn> &httpConn) {
@@ -224,7 +250,9 @@ void WebServer::onWrite(std::shared_ptr<HttpConn> httpConn) {
 
 void WebServer::process(std::shared_ptr<HttpConn> &httpConn) {
     assert(httpConn);
-    if (httpConn->process()) {
+    bool processFinish = httpConn->process();
+
+    if (processFinish) {
         // 处理成功，相当于数据读取完毕，然后将httpConn的fd加入epoller的写事件
         epoller_->modFd(httpConn->getFd(), httpConnEvent_ | EPOLLOUT);
     } else {

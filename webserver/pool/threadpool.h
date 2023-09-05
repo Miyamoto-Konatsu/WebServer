@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <vector>
 #include <cassert>
+#include <csignal>
 
 class ThreadPool {
 public:
@@ -45,6 +46,7 @@ public:
 
 private:
     void run() {
+        signal(SIGPIPE, SIG_IGN);
         while (!isClosed_ || !empty()) {
             std::unique_lock<std::mutex> lock(mtx_);
             while (tasks_.empty()) {

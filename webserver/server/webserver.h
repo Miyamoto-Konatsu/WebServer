@@ -2,16 +2,19 @@
 
 #include "epoller.h"
 #include <cstdint>
+#include <string>
 #include <sys/types.h>
 #include "log/log.h"
 #include "pool/threadpool.h"
 #include "timer/heaptimer.h"
 #include <memory>
 #include <http/httpconn.h>
+#include <vector>
 
 class WebServer {
 public:
-    WebServer(const char *ip, int port, int triggerMode, int timeout);
+    WebServer(const char *ip, int port, int triggerMode, int timeout,
+              std::string srcPath);
     ~WebServer();
 
     void start();
@@ -32,6 +35,10 @@ private:
     void closeHttpConn(int);
 
     void process(std::shared_ptr<HttpConn> &);
+
+public:
+    static volatile int isClosed_;
+
 private:
     uint32_t httpConnEvent_;
     uint32_t listenEvent_;
@@ -39,14 +46,14 @@ private:
     const char *ip_;
     int listenFd_;
     int port_;
-    int isClosed_;
     int httpTimeOut_; // ms
     int triggerMode_;
+    std::string srcPath_;
 
     std::unique_ptr<ThreadPool> threadPool_;
     std::unique_ptr<HeapTimer> timer_;
     std::unique_ptr<Epoller> epoller_;
 
-    std::unordered_map<int, std::shared_ptr<HttpConn>> httpConnMap_;
-    std::unordered_map<int, TimerId> httpConnTimerMap_;
+    std::vector<std::shared_ptr<HttpConn>> httpConnMap_;
+    std::vector<TimerId> httpConnTimerMap_;
 };

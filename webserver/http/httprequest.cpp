@@ -2,6 +2,12 @@
 #include <algorithm>
 #include <regex>
 #include <string>
+#include <unordered_map>
+
+const static std::unordered_map<std::string, std::string> DEFAULT_HTML{
+    {"/index", "/index.html"},     {"/register", "/register.html"},
+    {"/picture", "/picture.html"}, {"/video", "/video.html"},
+    {"/login", "/login.html"},      {"/welcome", "/welcome.html"}};
 
 void HttpRequest::reset() {
     HttpRequest temp;
@@ -10,7 +16,7 @@ void HttpRequest::reset() {
 
 bool HttpRequest::isKeepAlive() {
     if (header_.count("Connection") == 1) {
-        return header_["Connection"] == "keep-alive" && version_ == "1.1";
+        return header_["Connection"] == "keep-alive" && version_ == "HTTP/1.1";
     }
     return false;
 }
@@ -31,8 +37,11 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
 
         if (state_ == HttpRequestParseState::kExpectBody) {
             auto readableBytes = buffer.readableBytes();
-            auto bodyRestLength = stoi(header_["Content-Length"]) - body_.size();
-            line = std::string(buffer.peek(), buffer.peek() + std::min(readableBytes, bodyRestLength));
+            auto bodyRestLength =
+                stoi(header_["Content-Length"]) - body_.size();
+            line = std::string(buffer.peek(),
+                               buffer.peek()
+                                   + std::min(readableBytes, bodyRestLength));
             buffer.retrieve(line.size());
         } else {
             const char *crlf = findCRLF(buffer);
@@ -43,13 +52,16 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
             line = std::string(buffer.peek(), crlf);
             buffer.retrieve(line.size() + 2);
         }
-       
 
         switch (state_) {
         case HttpRequestParseState::kExpectRequestLine: {
             if (!processRequestLine(line)) {
                 hasParseError = true;
                 return false;
+            }
+            if (path_ == "/") { path_ = "/index"; }
+            if (DEFAULT_HTML.count(path_) == 1) {
+                path_ = DEFAULT_HTML.at(path_);
             }
             state_ = HttpRequestParseState::kExpectHeaders;
             break;
@@ -70,9 +82,7 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
             break;
         }
         case HttpRequestParseState::kExpectBody: {
-            if (!processBody(line)) {
-                return false;
-            }
+            if (!processBody(line)) { return false; }
             state_ = HttpRequestParseState::kGotAll;
             break;
         }
@@ -87,7 +97,7 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
 bool HttpRequest::processBody(const std::string &line) {
     body_ += line;
     if (header_.count("Content-Length") == 1) {
-        if(!std::regex_match(header_["Content-Length"], std::regex("\\d+"))) {
+        if (!std::regex_match(header_["Content-Length"], std::regex("\\d+"))) {
             throw std::runtime_error("Content-Length is not a number");
         }
         int contentLength = stoi(header_["Content-Length"]);

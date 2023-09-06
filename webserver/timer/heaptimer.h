@@ -160,7 +160,7 @@ public:
     int getNextTick() {
         int res = -1;
         tick();
-        if (!timers_.empty()) {
+        if (timers_.size() > 1) {
             auto now = stdClock::now();
             auto timestamp = timers_[1].getTimestamp().getTimestamp();
             if (now < timestamp) {

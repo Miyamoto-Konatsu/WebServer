@@ -27,6 +27,8 @@ public:
         assert(offset_ <= fileInfo_.st_size);
         return fileInfo_.st_size - offset_;
     }
+    
+    void close();
 
 private:
     void makeResponseLine(Buffer &buffer);
@@ -34,7 +36,6 @@ private:
     void makeResponseContent(Buffer &buffer);
     std::string make404Response();
     void preProcess();
-    void close();
 
 private:
     int code_;

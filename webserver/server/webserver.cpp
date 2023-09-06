@@ -5,14 +5,17 @@
 #include "pool/threadpool.h"
 #include "server/epoller.h"
 #include "timer/heaptimer.h"
+#include <mutex>
 #include <netinet/tcp.h>
 #include "sys/socket.h"
 #include "unistd.h"
 #include <cassert>
 #include <cstdio>
 #include <errno.h>
+#include <stdexcept>
 #include <string.h>
 #include <memory>
+#include <thread>
 #include <unistd.h>
 #include <sys/socket.h> // Added header for SO_NOSIGPIPE
 #include <sys/epoll.h>
@@ -34,7 +37,7 @@ WebServer::WebServer(const char *ip, int port, int triggerMode, int timeout,
                      std::string srcPath) :
     ip_(ip),
     port_(port), triggerMode_(triggerMode), httpTimeOut_(timeout),
-    srcPath_(srcPath), threadPool_(new ThreadPool(12)), timer_(new HeapTimer),
+    srcPath_(srcPath), threadPool_(new ThreadPool(6)), timer_(new HeapTimer),
     epoller_(new Epoller) {
     httpConnTimerMap_.resize(65535);
     httpConnMap_.resize(65535);
@@ -126,7 +129,7 @@ void WebServer::start() {
                 dealListen();
             } else if (epoller_->getEvent(i).events & (EPOLLRDHUP | EPOLLERR)) {
                 // todo:现在遇到EPOLLRDHUP和EPOLLERR都是直接关闭连接，后续应该单独处理EPOLLRDHUP事件
-                closeHttpConn(fd);
+                closeHttpConn(httpConnMap_[fd]);
             } else if (epoller_->getEvent(i).events & EPOLLIN) {
                 assert(httpConnMap_[fd]);
                 dealRead(httpConnMap_[fd]);
@@ -138,16 +141,19 @@ void WebServer::start() {
     }
 }
 
-void WebServer::closeHttpConn(int httpClientFd) {
-    assert(httpConnMap_[httpClientFd]);
-
-    LOG_DEBUG("close httpConn, fd: %d", httpClientFd);
-    if (httpTimeOut_ > 0) {
-        timer_->delTimerNode(httpConnTimerMap_[httpClientFd]);
+// 并发调用
+void WebServer::closeHttpConn(std::weak_ptr<HttpConn> httpClientWeak) {
+    // if (httpTimeOut_ > 0) {
+    //     timer_->delTimerNode(httpConnTimerMap_[httpClientFd]);
+    // }
+    //
+    if (auto httpClient = httpClientWeak.lock()) {
+        httpClient->close();
+        httpClient.reset();
     }
-
-    epoller_->delFd(httpClientFd);
-    httpConnMap_[httpClientFd]->close();
+    // 关闭fd后，epoller会自动删除fd（当该fd的引用计数为0时）
+    // int fd = httpClient->close();
+    // if (fd > 0) { epoller_->delFd(fd); }
 }
 
 void WebServer::dealListen() {
@@ -179,72 +185,87 @@ void WebServer::dealListen() {
         }
 
         httpConnMap_[httpClientFd] = std::make_shared<HttpConn>(
-            httpClientFd, clientIp, clientPort, srcPath_);
+            httpClientFd, clientIp, clientPort, srcPath_, epoller_);
+
         if (httpTimeOut_ > 0) {
             TimerId timerId = timer_->add(
-                [this, httpClientFd]() { closeHttpConn(httpClientFd); },
+                std::bind(&WebServer::closeHttpConn, this,
+                          httpConnMap_[httpClientFd]),
                 this->httpTimeOut_ / 1000, this->httpTimeOut_ % 1000);
             httpConnTimerMap_[httpClientFd] = timerId;
         }
 
         setNonBlocking(httpClientFd);
-        
-        assert(epoller_->addFd(httpClientFd, httpConnEvent_ | EPOLLIN));
 
+        assert(epoller_->addFd(httpClientFd, httpConnEvent_ | EPOLLIN));
     } while (listenEvent_ & EPOLLET);
 }
 
 void WebServer::dealRead(std::shared_ptr<HttpConn> &httpConn) {
     assert(httpConn);
-    threadPool_->addTask([this, httpConn]() { onRead(httpConn); });
+    threadPool_->addTask([this, &httpConn]() { onRead(httpConn); });
     resetTimeout(httpConn);
 }
 
 void WebServer::dealWrite(std::shared_ptr<HttpConn> &httpConn) {
     assert(httpConn);
-    threadPool_->addTask([this, httpConn]() { onWrite(httpConn); });
+    threadPool_->addTask([this, &httpConn]() { onWrite(httpConn); });
     resetTimeout(httpConn);
 }
 
 void WebServer::resetTimeout(std::shared_ptr<HttpConn> &httpConn) {
     assert(httpConn);
     if (httpTimeOut_ > 0) {
-        TimerId timerId = httpConnTimerMap_[httpConn->getFd()];
-        timer_->adjust(timerId, httpTimeOut_ / 1000, httpTimeOut_ % 1000);
+        try {
+            TimerId timerId = httpConnTimerMap_[httpConn->getFd()];
+            timer_->adjust(timerId, httpTimeOut_ / 1000, httpTimeOut_ % 1000);
+        } catch (const std::logic_error &e) {
+            LOG_WARN("%s %s use a closed http conn, exception: %s", __FILE__,
+                     __FUNCTION__, e.what());
+        }
     }
 }
 
 void WebServer::onRead(std::shared_ptr<HttpConn> httpConn) {
-    assert(httpConn);
-    int readErrno = 0;
-    int readSize = httpConn->read(readErrno);
-    if (readSize < 0 && readErrno != EAGAIN || readSize == 0) {
-        closeHttpConn(httpConn->getFd());
-        return;
+    try {
+        int readErrno = 0;
+        int readSize = httpConn->read(readErrno);
+        if (readSize < 0 && readErrno != EAGAIN || readSize == 0) {
+            closeHttpConn(httpConn);
+            return;
+        }
+        LOG_DEBUG("read from httpconn, fd: %d, readSize: %d", httpConn->getFd(),
+                  readSize);
+        process(httpConn);
+    } catch (const std::logic_error &e) {
+        LOG_WARN("exception: %s", e.what());
+        closeHttpConn(httpConn);
     }
-    LOG_INFO("read from httpconn, fd: %d, readSize: %d", httpConn->getFd(),
-             readSize);
-    process(httpConn);
 }
 
 void WebServer::onWrite(std::shared_ptr<HttpConn> httpConn) {
     assert(httpConn);
-    int writeErrno = 0;
-    int writeSize = httpConn->write(writeErrno);
-    if (writeSize < 0 && writeErrno != EAGAIN) {
-        closeHttpConn(httpConn->getFd());
-        return;
-    }
-    LOG_INFO("write to httpconn, fd: %d, writeSize: %d", httpConn->getFd(),
-             writeSize);
-    if (httpConn->needWrite()) {
-        epoller_->modFd(httpConn->getFd(), httpConnEvent_ | EPOLLOUT);
-    } else {
-        if (httpConn->isKeepAlive()) {
-            process(httpConn);
+    try {
+        int writeErrno = 0;
+        int writeSize = httpConn->write(writeErrno);
+        if (writeSize < 0 && writeErrno != EAGAIN) {
+            closeHttpConn(httpConn);
             return;
         }
-        closeHttpConn(httpConn->getFd());
+        LOG_DEBUG("write to httpconn, fd: %d, writeSize: %d", httpConn->getFd(),
+                  writeSize);
+        if (httpConn->needWrite()) {
+            epoller_->modFd(httpConn->getFd(), httpConnEvent_ | EPOLLOUT);
+        } else {
+            if (httpConn->isKeepAlive()) {
+                process(httpConn);
+                return;
+            }
+            closeHttpConn(httpConn);
+        }
+    } catch (const std::logic_error &e) {
+        LOG_WARN("exception: %s", e.what());
+        closeHttpConn(httpConn);
     }
 }
 

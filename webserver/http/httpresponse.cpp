@@ -58,6 +58,7 @@ void HttpResponse::close() {
         ::close(fd_);
         fd_ = -1;
     }
+    fileInfo_ = {0};
     offset_ = 0;
 }
 

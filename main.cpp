@@ -10,9 +10,10 @@ void sigHandler(int sig) {
 }
 
 int main() {
-    signal(SIGPIPE, SIG_IGN); Log::getInstance()->init(0);
+    signal(SIGPIPE, SIG_IGN);
+    Log::getInstance()->init(1);
     signal(SIGPIPE, sigHandler);
-    WebServer server("0.0.0.0", 8081, 4, -1,
+    WebServer server("0.0.0.0", 8081, 4, 60000,
                      "/root/code/cpp/TinyWebServer/static/");
     server.start();
 

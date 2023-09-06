@@ -3,16 +3,19 @@
 #include "log/log.h"
 #include "buffer/buffer.h"
 #include <bits/types/struct_iovec.h>
+#include <memory>
 #include <netinet/in.h>
 #include "httpresponse.h"
+#include <mutex>
+#include "server/epoller.h"
+
 class HttpConn {
 public:
-    HttpConn(int fd, char *ip, short port, std::string srcPath);
+    HttpConn(int fd, char *ip, unsigned short port, std::string srcPath,
+             std::shared_ptr<Epoller> epoller);
     ~HttpConn();
 
-    int getFd() const {
-        return fd_;
-    }
+    int getFd();
 
     void close();
 
@@ -31,14 +34,21 @@ public:
     bool needWrite();
 
 private:
+    void throwIfClosed();
+
+private:
     static bool isET_;
 
     int fd_;
+    std::shared_ptr<Epoller> epoller_;
 
     char clientIp_[INET_ADDRSTRLEN];
     unsigned short clientPort_;
 
     bool isClose_;
+    bool isKeepAlive_;
+
+    std::mutex mtx_;
 
     std::string srcPath_;
 

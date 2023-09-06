@@ -32,7 +32,7 @@ private:
     void dealWrite(std::shared_ptr<HttpConn> &);
     void dealListen();
 
-    void closeHttpConn(int);
+    void closeHttpConn(std::weak_ptr<HttpConn>);
 
     void process(std::shared_ptr<HttpConn> &);
 
@@ -52,7 +52,7 @@ private:
 
     std::unique_ptr<ThreadPool> threadPool_;
     std::unique_ptr<HeapTimer> timer_;
-    std::unique_ptr<Epoller> epoller_;
+    std::shared_ptr<Epoller> epoller_;
 
     std::vector<std::shared_ptr<HttpConn>> httpConnMap_;
     std::vector<TimerId> httpConnTimerMap_;

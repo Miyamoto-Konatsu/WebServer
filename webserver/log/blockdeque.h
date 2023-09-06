@@ -9,7 +9,7 @@
 template <typename T>
 class BlockDeque {
 public:
-    explicit BlockDeque(size_t maxCapacity = 1000) : capacity_(maxCapacity) {
+    explicit BlockDeque(size_t maxCapacity = 1024) : capacity_(maxCapacity) {
     }
 
     ~BlockDeque() {

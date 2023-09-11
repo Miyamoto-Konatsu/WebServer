@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.0.0)
 project(TinyWebServer VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
-
+set(CMAKE_CXX_STANDARD 11)
+link_libraries(ssl crypto)
 file(GLOB_RECURSE sources "${CMAKE_SOURCE_DIR}/webserver/*/*.c*") 
 add_executable(server ./main.cpp ${sources})
 target_link_libraries(server PRIVATE pthread mysqlclient)

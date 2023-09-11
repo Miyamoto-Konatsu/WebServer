@@ -44,11 +44,14 @@ WebServer::WebServer(const char *ip, int port, int triggerMode, int timeout,
     init();
 }
 
-// todo: 按正确的顺序关闭资源
+// ? 这个关闭资源的顺序是否正确
 WebServer::~WebServer() {
     isClosed_ = 1;
     close(listenFd_);
+    // 会等待所有任务执行完毕后再关闭线程池
     threadPool_.reset();
+    timer_.reset();
+    epoller_.reset();
 }
 
 void WebServer::init() {

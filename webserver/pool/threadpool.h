@@ -30,9 +30,10 @@ public:
         return tasks_.empty();
     }
 
+    // throw std::runtime_error("ThreadPool is closed!");
     template <typename F>
     void addTask(F &&task) {
-        assert(!isClosed_);
+        if (isClosed_) { throw std::runtime_error("ThreadPool is closed!"); }
         {
             std::lock_guard<std::mutex> lock(mtx_);
             tasks_.push(std::forward<F>(task));

@@ -3,11 +3,17 @@
 #include <regex>
 #include <string>
 #include <unordered_map>
+#include "db/db.h"
 
 const static std::unordered_map<std::string, std::string> DEFAULT_HTML{
     {"/index", "/index.html"},     {"/register", "/register.html"},
     {"/picture", "/picture.html"}, {"/video", "/video.html"},
-    {"/login", "/login.html"},      {"/welcome", "/welcome.html"}};
+    {"/login", "/login.html"},     {"/welcome", "/welcome.html"}};
+
+const static std::unordered_map<std::string, int> DEFAULT_HTML_TAG{
+    {"/register.html", 0},
+    {"/login.html", 1},
+};
 
 void HttpRequest::reset() {
     HttpRequest temp;
@@ -84,6 +90,7 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
         case HttpRequestParseState::kExpectBody: {
             if (!processBody(line)) { return false; }
             state_ = HttpRequestParseState::kGotAll;
+            parseBody();
             break;
         }
         case HttpRequestParseState::kGotAll: {
@@ -92,6 +99,24 @@ bool HttpRequest::parseRequest(Buffer &buffer, bool &hasParseError) {
         }
     }
     return true;
+}
+
+static std::string urlEncodingDecode(const std::string &encodedStr) {
+    std::stringstream decodedStream;
+
+    for (size_t i = 0; i < encodedStr.size(); ++i) {
+        if (encodedStr[i] == '%') {
+            if (i + 2 < encodedStr.size()) {
+                char decodedChar =
+                    std::stoi(encodedStr.substr(i + 1, 2), nullptr, 16);
+                decodedStream << decodedChar;
+                i += 2;
+            }
+        } else {
+            decodedStream << encodedStr[i];
+        }
+    }
+    return decodedStream.str();
 }
 
 bool HttpRequest::processBody(const std::string &line) {
@@ -104,6 +129,50 @@ bool HttpRequest::processBody(const std::string &line) {
         if (body_.size() == contentLength) { return true; }
     }
     return false;
+}
+
+void HttpRequest::parseBody() {
+    if (header_.count("Content-Type") == 1) {
+        if (header_["Content-Type"] == "application/x-www-form-urlencoded") {
+            parsePost(body_);
+        }
+    }
+}
+
+void HttpRequest::parsePost(const std::string &body) {
+    std::vector<std::string> tokens;
+    std::string token;
+    std::istringstream tokenStream(body);
+    while (std::getline(tokenStream, token, '&')) { tokens.push_back(token); }
+    for (auto &token : tokens) {
+        std::string key;
+        std::string value;
+        std::istringstream tokenStream(token);
+        std::getline(tokenStream, key, '=');
+        std::getline(tokenStream, value, '=');
+        key = urlEncodingDecode(key);
+        value = urlEncodingDecode(value);
+        post_[key] = value;
+    }
+
+    if (DEFAULT_HTML_TAG.count(path_) == 1) {
+        if (DEFAULT_HTML_TAG.at(path_) == 0) {
+            UserModel user(post_["username"], post_["password"]);
+            if (UserSql::getInstance()->addUser(user)) {
+                path_ = "/welcome.html";
+            } else {
+                path_ = "/error.html";
+            }
+        } else if (DEFAULT_HTML_TAG.at(path_) == 1) {
+            UserModel user(post_["username"], post_["password"]);
+            if (UserSql::getInstance()->hasUser(user)) {
+                path_ = "/welcome.html";
+            } else {
+                path_ = "/error.html";
+            }
+        }
+    }
+
 }
 
 bool HttpRequest::processRequestLine(const std::string &requestLine) {

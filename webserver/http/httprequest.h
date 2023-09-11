@@ -32,9 +32,7 @@ public:
     std::string getHeader(const std::string &key) const {
         std::string header;
         auto iter = header_.find(key);
-        if (iter != header_.end()) {
-            header = iter->second;
-        }
+        if (iter != header_.end()) { header = iter->second; }
         return header;
     }
 
@@ -44,6 +42,10 @@ public:
 
     std::string getBody() const {
         return body_;
+    }
+
+    std::string getPost(const std::string key) {
+        return post_[key];
     }
 
 private:
@@ -57,12 +59,18 @@ private:
 
     bool hasBody() const;
 
+    void parsePost(const std::string &body);
+
+    void parseBody();
+
 private:
-    HttpRequestParseState state_=HttpRequestParseState::kExpectRequestLine;
+    HttpRequestParseState state_ = HttpRequestParseState::kExpectRequestLine;
 
     std::string method_;
     std::string path_;
     std::string version_;
     std::unordered_map<std::string, std::string> header_;
     std::string body_;
+
+    std::unordered_map<std::string, std::string> post_;
 };

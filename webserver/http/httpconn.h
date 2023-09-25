@@ -17,7 +17,8 @@ public:
 
     int getFd();
 
-    void close();
+    //return true if is working(locked)
+    bool close();
 
     int read(int &saveErrno);
 

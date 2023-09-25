@@ -26,11 +26,11 @@ HttpConn::~HttpConn() {
     close();
 }
 
-void HttpConn::close() {
+bool HttpConn::close() {
     LOG_INFO("close http conn, remote addr = %s ,remote = fd: %hu", clientIp_,
              clientPort_);
-
-    std::lock_guard<std::mutex> lock(mtx_);
+    auto isLocked = mtx_.try_lock();
+    if (!isLocked) { return true; }
     int res = fd_;
     if (!isClose_) {
         ::close(fd_);
@@ -42,6 +42,8 @@ void HttpConn::close() {
         response_.close();
         isKeepAlive_ = false;
     }
+    mtx_.unlock();
+    return false;
 }
 
 int HttpConn::read(int &saveErrno) {

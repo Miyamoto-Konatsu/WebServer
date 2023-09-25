@@ -28,7 +28,7 @@ int main() {
         heapTimer.add([]() { std::cout << "6" << std::endl
                                        << std::flush; }, 0,
                       330); // shoud not output
-    heapTimer.adjust(id2, 1, 0); 
+    heapTimer.adjust(id6, 10, 0); 
     heapTimer.delTimerNode(id2);
 
 

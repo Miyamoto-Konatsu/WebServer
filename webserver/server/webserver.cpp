@@ -151,8 +151,17 @@ void WebServer::closeHttpConn(std::weak_ptr<HttpConn> httpClientWeak) {
     // }
     //
     if (auto httpClient = httpClientWeak.lock()) {
-        httpClient->close();
-        httpClient.reset();
+        auto isWorking = httpClient->close();
+
+        //如果是true，那么执行此函数的线程一定是主线程
+        if (isWorking) {
+            try {
+                TimerId timerId = timer_->add(
+                    std::bind(&WebServer::closeHttpConn, this, httpClient),
+                    this->httpTimeOut_ / 1000, this->httpTimeOut_ % 1000);
+                httpConnTimerMap_[httpClient->getFd()] = timerId;
+            } catch (...) {}
+        }
     }
     // 关闭fd后，epoller会自动删除fd（当该fd的引用计数为0时）
     // int fd = httpClient->close();
@@ -234,7 +243,7 @@ void WebServer::onRead(std::shared_ptr<HttpConn> httpConn) {
         int readErrno = 0;
         int readSize = httpConn->read(readErrno);
         if (readSize < 0 && readErrno != EAGAIN || readSize == 0) {
-            closeHttpConn(httpConn);
+            httpConn->close();
             return;
         }
         LOG_DEBUG("read from httpconn, fd: %d, readSize: %d", httpConn->getFd(),
@@ -242,7 +251,7 @@ void WebServer::onRead(std::shared_ptr<HttpConn> httpConn) {
         process(httpConn);
     } catch (const std::logic_error &e) {
         LOG_WARN("exception: %s", e.what());
-        closeHttpConn(httpConn);
+        httpConn->close();
     }
 }
 
@@ -252,7 +261,8 @@ void WebServer::onWrite(std::shared_ptr<HttpConn> httpConn) {
         int writeErrno = 0;
         int writeSize = httpConn->write(writeErrno);
         if (writeSize < 0 && writeErrno != EAGAIN) {
-            closeHttpConn(httpConn);
+            httpConn->close();
+
             return;
         }
         LOG_DEBUG("write to httpconn, fd: %d, writeSize: %d", httpConn->getFd(),
@@ -264,11 +274,11 @@ void WebServer::onWrite(std::shared_ptr<HttpConn> httpConn) {
                 process(httpConn);
                 return;
             }
-            closeHttpConn(httpConn);
+            httpConn->close();
         }
     } catch (const std::logic_error &e) {
         LOG_WARN("exception: %s", e.what());
-        closeHttpConn(httpConn);
+        httpConn->close();
     }
 }
 
